@@ -1,11 +1,15 @@
 import 'dart:async';
+import 'dart:math' as math;
 
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_compass/flutter_compass.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const OurMapsApp());
 }
 
@@ -115,6 +119,12 @@ class _MapHomePageState extends State<MapHomePage> {
     });
   }
 
+  void _openAr() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const ArNavigationPage()),
+    );
+  }
+
   void _showMessage(String message) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
@@ -139,11 +149,23 @@ class _MapHomePageState extends State<MapHomePage> {
           ),
           Positioned(
             right: 16,
-            bottom: 150,
-            child: FloatingActionButton.small(
-              heroTag: 'location',
-              onPressed: _locateUser,
-              child: const Icon(Icons.my_location),
+            bottom: 158,
+            child: Column(
+              children: [
+                FloatingActionButton.small(
+                  heroTag: 'ar',
+                  onPressed: _openAr,
+                  tooltip: 'AR-навигация',
+                  child: const Icon(Icons.view_in_ar),
+                ),
+                const SizedBox(height: 10),
+                FloatingActionButton.small(
+                  heroTag: 'location',
+                  onPressed: _locateUser,
+                  tooltip: 'Моё местоположение',
+                  child: const Icon(Icons.my_location),
+                ),
+              ],
             ),
           ),
         ],
@@ -438,6 +460,277 @@ class _MapHomePageState extends State<MapHomePage> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class ArNavigationPage extends StatefulWidget {
+  const ArNavigationPage({super.key});
+
+  @override
+  State<ArNavigationPage> createState() => _ArNavigationPageState();
+}
+
+class _ArNavigationPageState extends State<ArNavigationPage> {
+  // First AR target: Red Square. Real route targets will be supplied by the
+  // routing backend when navigation is connected.
+  static const LatLng _target = LatLng(55.7539, 37.6208);
+
+  CameraController? _cameraController;
+  StreamSubscription<CompassEvent>? _compassSubscription;
+  StreamSubscription<Position>? _positionSubscription;
+  LatLng? _location;
+  double? _heading;
+  double? _bearing;
+  double? _distance;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _startAr();
+  }
+
+  @override
+  void dispose() {
+    _compassSubscription?.cancel();
+    _positionSubscription?.cancel();
+    _cameraController?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _startAr() async {
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        throw StateError('Камера не найдена');
+      }
+
+      final backCamera = cameras.firstWhere(
+        (camera) => camera.lensDirection == CameraLensDirection.back,
+        orElse: () => cameras.first,
+      );
+
+      final controller = CameraController(
+        backCamera,
+        ResolutionPreset.medium,
+        enableAudio: false,
+      );
+      await controller.initialize();
+
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      setState(() => _cameraController = controller);
+
+      _compassSubscription = FlutterCompass.events?.listen((event) {
+        final heading = event.heading;
+        if (!mounted || heading == null) return;
+        setState(() {
+          _heading = heading;
+          _updateBearing();
+        });
+      });
+
+      await _startLocation();
+    } on CameraException catch (error) {
+      if (mounted) setState(() => _error = 'Не удалось открыть камеру: ${error.description ?? error.code}');
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    }
+  }
+
+  Future<void> _startLocation() async {
+    if (!await Geolocator.isLocationServiceEnabled()) {
+      if (mounted) setState(() => _error = 'Включите геолокацию для AR-навигации');
+      return;
+    }
+
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    if (permission == LocationPermission.denied ||
+        permission == LocationPermission.deniedForever) {
+      if (mounted) setState(() => _error = 'Разрешите доступ к геолокации');
+      return;
+    }
+
+    final position = await Geolocator.getCurrentPosition();
+    _setLocation(position);
+
+    _positionSubscription = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 5,
+      ),
+    ).listen(_setLocation);
+  }
+
+  void _setLocation(Position position) {
+    if (!mounted) return;
+    setState(() {
+      _location = LatLng(position.latitude, position.longitude);
+      _distance = Geolocator.distanceBetween(
+        position.latitude,
+        position.longitude,
+        _target.latitude,
+        _target.longitude,
+      );
+      _updateBearing();
+    });
+  }
+
+  void _updateBearing() {
+    if (_location == null) return;
+    final lat1 = _location!.latitude * math.pi / 180;
+    final lat2 = _target.latitude * math.pi / 180;
+    final deltaLon = (_target.longitude - _location!.longitude) * math.pi / 180;
+
+    final y = math.sin(deltaLon) * math.cos(lat2);
+    final x = math.cos(lat1) * math.sin(lat2) -
+        math.sin(lat1) * math.cos(lat2) * math.cos(deltaLon);
+    final bearing = math.atan2(y, x) * 180 / math.pi;
+    _bearing = (bearing + 360) % 360;
+  }
+
+  double _relativeBearing() {
+    if (_bearing == null || _heading == null) return 0;
+    var relative = _bearing! - _heading!;
+    while (relative > 180) {
+      relative -= 360;
+    }
+    while (relative < -180) {
+      relative += 360;
+    }
+    return relative;
+  }
+
+  String _distanceText() {
+    if (_distance == null) return 'Определяем расстояние…';
+    if (_distance! < 1000) return '${_distance!.round()} м';
+    return '${(_distance! / 1000).toStringAsFixed(1)} км';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = _cameraController;
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (controller != null && controller.value.isInitialized)
+            CameraPreview(controller)
+          else
+            const Center(child: CircularProgressIndicator()),
+          if (_error != null)
+            Center(
+              child: Container(
+                margin: const EdgeInsets.all(24),
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.78),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  _error!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white, fontSize: 16),
+                ),
+              ),
+            ),
+          SafeArea(
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    children: [
+                      _ArCircleButton(
+                        icon: Icons.arrow_back,
+                        onPressed: () => Navigator.of(context).pop(),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.65),
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                          child: const Text(
+                            'AR-навигация',
+                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Spacer(),
+                Transform.translate(
+                  offset: Offset(_relativeBearing().clamp(-55, 55).toDouble() * 3, 0),
+                  child: const Icon(
+                    Icons.navigation,
+                    color: Colors.white,
+                    size: 92,
+                    shadows: [Shadow(blurRadius: 12, color: Colors.black)],
+                  ),
+                ),
+                const Spacer(),
+                Container(
+                  margin: const EdgeInsets.fromLTRB(12, 0, 12, 18),
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.72),
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                  child: Column(
+                    children: [
+                      const Text(
+                        'Красная площадь',
+                        style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        _distanceText(),
+                        style: const TextStyle(color: Colors.white70, fontSize: 16),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _heading == null ? 'Ищем направление…' : 'Поверните телефон по стрелке',
+                        style: const TextStyle(color: Colors.white70),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ArCircleButton extends StatelessWidget {
+  const _ArCircleButton({required this.icon, required this.onPressed});
+
+  final IconData icon;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.black.withValues(alpha: 0.65),
+      shape: const CircleBorder(),
+      child: IconButton(
+        onPressed: onPressed,
+        color: Colors.white,
+        icon: Icon(icon),
       ),
     );
   }
