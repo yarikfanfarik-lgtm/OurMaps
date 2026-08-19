@@ -28,6 +28,9 @@ jobs:
       - name: Flutter version
         run: flutter --version
 
+      - name: Generate Android project
+        run: flutter create . --platforms=android --project-name our_maps
+
       - name: Install dependencies
         run: flutter pub get
 
