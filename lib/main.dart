@@ -1,12 +1,15 @@
 import 'dart:async';
 import 'dart:math' as math;
-
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
+import 'place_search.dart';
+
+const String yandexApiKey = String.fromEnvironment('YANDEX_API_KEY');
+const LatLng defaultCenter = LatLng(55.7539, 37.6208);
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,723 +18,192 @@ Future<void> main() async {
 
 class OurMapsApp extends StatelessWidget {
   const OurMapsApp({super.key});
-
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'OurMaps',
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1976D2)),
-      ),
-      home: const MapHomePage(),
-    );
-  }
+  Widget build(BuildContext context) => MaterialApp(
+    debugShowCheckedModeBanner: false,
+    title: 'OurMaps',
+    theme: ThemeData(useMaterial3: true, colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1976D2))),
+    home: const MapHomePage(),
+  );
 }
 
 class MapHomePage extends StatefulWidget {
   const MapHomePage({super.key});
-
   @override
   State<MapHomePage> createState() => _MapHomePageState();
 }
 
 class _MapHomePageState extends State<MapHomePage> {
-  final MapController _mapController = MapController();
-  final TextEditingController _searchController = TextEditingController();
-  final List<String> _history = <String>[
-    'Красная площадь',
-    'Москва-Сити',
-    'Парк Горького',
-  ];
-
-  StreamSubscription<Position>? _positionSubscription;
-  LatLng _center = const LatLng(55.7539, 37.6208);
-  LatLng? _userLocation;
+  final MapController _map = MapController();
+  final TextEditingController _search = TextEditingController();
+  final List<String> _history = [];
+  List<PlaceResult> _results = [];
+  LatLng _center = defaultCenter;
   bool _searchOpen = false;
-  bool _aiOpen = false;
-  bool _automaticRecommendations = true;
-  int _recommendationDistance = 2;
+  bool _loading = false;
   String _transport = 'Пешком';
-
-  @override
-  void dispose() {
-    _positionSubscription?.cancel();
-    _searchController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _locateUser() async {
-    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled && mounted) {
-      _showMessage('Включите геолокацию на телефоне');
-      return;
-    }
-
-    var permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
-    if (permission == LocationPermission.denied ||
-        permission == LocationPermission.deniedForever) {
-      if (mounted) _showMessage('Нет разрешения на геолокацию');
-      return;
-    }
-
-    final position = await Geolocator.getCurrentPosition();
-    final point = LatLng(position.latitude, position.longitude);
-    setState(() {
-      _userLocation = point;
-      _center = point;
-    });
-    _mapController.move(point, 15);
-
-    _positionSubscription ??= Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 50,
-      ),
-    ).listen((position) {
-      final point = LatLng(position.latitude, position.longitude);
-      if (!mounted) return;
-      setState(() => _userLocation = point);
-    });
-  }
-
-  void _showSearch() {
-    setState(() {
-      _searchOpen = true;
-      _aiOpen = false;
-    });
-  }
-
-  void _selectHistory(String value) {
-    _searchController.text = value;
-    setState(() => _searchOpen = false);
-    _showMessage('Поиск: $value');
-  }
-
-  void _openAi() {
-    setState(() {
-      _aiOpen = true;
-      _searchOpen = false;
-    });
-  }
-
-  void _openAr() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => const ArNavigationPage()),
-    );
-  }
-
-  void _showMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Stack(
-        children: [
-          _buildMap(),
-          SafeArea(
-            child: Column(
-              children: [
-                _buildSearchBar(),
-                if (_searchOpen) _buildSearchPanel(),
-                if (_aiOpen) _buildAiPanel(),
-                const Spacer(),
-                _buildTransportBar(),
-                _buildRecommendationBar(),
-              ],
-            ),
-          ),
-          Positioned(
-            right: 16,
-            bottom: 158,
-            child: Column(
-              children: [
-                FloatingActionButton.small(
-                  heroTag: 'ar',
-                  onPressed: _openAr,
-                  tooltip: 'AR-навигация',
-                  child: const Icon(Icons.view_in_ar),
-                ),
-                const SizedBox(height: 10),
-                FloatingActionButton.small(
-                  heroTag: 'location',
-                  onPressed: _locateUser,
-                  tooltip: 'Моё местоположение',
-                  child: const Icon(Icons.my_location),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMap() {
-    return FlutterMap(
-      mapController: _mapController,
-      options: MapOptions(
-        initialCenter: _center,
-        initialZoom: 13,
-        minZoom: 3,
-        maxZoom: 19,
-      ),
-      children: [
-        TileLayer(
-          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-          userAgentPackageName: 'ru.ourmaps.app',
-        ),
-        if (_userLocation != null)
-          MarkerLayer(
-            markers: [
-              Marker(
-                point: _userLocation!,
-                width: 44,
-                height: 44,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.blue.withValues(alpha: 0.18),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Center(
-                    child: Icon(Icons.navigation, color: Colors.blue, size: 28),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        RichAttributionWidget(
-          attributions: [
-            TextSourceAttribution('OpenStreetMap contributors'),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _buildSearchBar() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-      child: Material(
-        elevation: 5,
-        borderRadius: BorderRadius.circular(18),
-        color: Theme.of(context).colorScheme.surface,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(18),
-          onTap: _showSearch,
-          child: SizedBox(
-            height: 56,
-            child: Row(
-              children: [
-                const SizedBox(width: 18),
-                const Icon(Icons.search),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Куда отправимся?',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'ИИ-рекомендации',
-                  onPressed: _openAi,
-                  icon: const Icon(Icons.auto_awesome),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSearchPanel() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      child: Material(
-        elevation: 5,
-        borderRadius: BorderRadius.circular(18),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: _searchController,
-                autofocus: true,
-                textInputAction: TextInputAction.search,
-                decoration: InputDecoration(
-                  hintText: 'Адрес, место или вопрос',
-                  prefixIcon: const Icon(Icons.search),
-                  suffixIcon: IconButton(
-                    onPressed: _openAi,
-                    icon: const Icon(Icons.auto_awesome),
-                  ),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                ),
-                onSubmitted: _selectHistory,
-              ),
-              const SizedBox(height: 12),
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Последние места', style: TextStyle(fontWeight: FontWeight.w700)),
-              ),
-              const SizedBox(height: 4),
-              ..._history.map(
-                (place) => ListTile(
-                  dense: true,
-                  leading: const Icon(Icons.history),
-                  title: Text(place),
-                  onTap: () => _selectHistory(place),
-                ),
-              ),
-              Wrap(
-                spacing: 8,
-                children: [
-                  _quickSearchChip('🍕 Еда'),
-                  _quickSearchChip('☕ Кофе'),
-                  _quickSearchChip('🏛️ Места'),
-                  _quickSearchChip('🛍️ Магазины'),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildAiPanel() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      child: Material(
-        elevation: 5,
-        borderRadius: BorderRadius.circular(18),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.auto_awesome),
-                  const SizedBox(width: 8),
-                  Text('Что интересного рядом?', style: Theme.of(context).textTheme.titleMedium),
-                  const Spacer(),
-                  IconButton(
-                    onPressed: () => setState(() => _aiOpen = false),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              const Text('Напишите обычным языком — например: «куда сходить поесть недорого?»'),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  _quickSearchChip('🔥 Популярное рядом'),
-                  _quickSearchChip('🍕 Поесть'),
-                  _quickSearchChip('🌳 Погулять'),
-                  _quickSearchChip('🎬 Развлечения'),
-                ],
-              ),
-              const SizedBox(height: 12),
-              const Text('ИИ пока подключён как интерфейс. Реальный рекомендатор подключим к нашему backend позже.'),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _quickSearchChip(String label) {
-    return ActionChip(
-      label: Text(label),
-      onPressed: () => _showMessage('Поиск: $label'),
-    );
-  }
-
-  Widget _buildTransportBar() {
-    const modes = ['Пешком', 'Машина', 'Автобус', 'Метро'];
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      child: Material(
-        elevation: 4,
-        borderRadius: BorderRadius.circular(18),
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.all(6),
-          child: Row(
-            children: modes.map((mode) {
-              final selected = _transport == mode;
-              return Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 2),
-                child: ChoiceChip(
-                  label: Text(mode),
-                  selected: selected,
-                  onSelected: (_) => setState(() => _transport = mode),
-                ),
-              );
-            }).toList(),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildRecommendationBar() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
-      child: Material(
-        elevation: 6,
-        borderRadius: BorderRadius.circular(20),
-        color: Theme.of(context).colorScheme.surface,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(20),
-          onTap: _openAi,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 10, 12),
-            child: Row(
-              children: [
-                const Icon(Icons.auto_awesome),
-                const SizedBox(width: 10),
-                const Expanded(
-                  child: Text(
-                    'Что интересного рядом?',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'Настройки рекомендаций',
-                  onPressed: _showRecommendationSettings,
-                  icon: const Icon(Icons.tune),
-                ),
-                const Icon(Icons.chevron_right),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  void _showRecommendationSettings() {
-    showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setSheetState) => Padding(
-          padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SwitchListTile(
-                title: const Text('Автоматические рекомендации'),
-                subtitle: const Text('Обновлять после перемещения на заданное расстояние'),
-                value: _automaticRecommendations,
-                onChanged: (value) {
-                  setState(() => _automaticRecommendations = value);
-                  setSheetState(() {});
-                },
-              ),
-              if (_automaticRecommendations)
-                DropdownButtonFormField<int>(
-                  initialValue: _recommendationDistance,
-                  decoration: const InputDecoration(labelText: 'Обновлять каждые'),
-                  items: const [1, 2, 5].map((km) {
-                    return DropdownMenuItem(value: km, child: Text('$km км'));
-                  }).toList(),
-                  onChanged: (value) {
-                    if (value != null) setState(() => _recommendationDistance = value);
-                  },
-                ),
-              const SizedBox(height: 8),
-              const Text('При ручном режиме приложение не будет самостоятельно обновлять рекомендации — это экономит батарею и трафик.'),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class ArNavigationPage extends StatefulWidget {
-  const ArNavigationPage({super.key});
-
-  @override
-  State<ArNavigationPage> createState() => _ArNavigationPageState();
-}
-
-class _ArNavigationPageState extends State<ArNavigationPage> {
-  // First AR target: Red Square. Real route targets will be supplied by the
-  // routing backend when navigation is connected.
-  static const LatLng _target = LatLng(55.7539, 37.6208);
-
-  CameraController? _cameraController;
-  StreamSubscription<CompassEvent>? _compassSubscription;
-  StreamSubscription<Position>? _positionSubscription;
-  LatLng? _location;
-  double? _heading;
-  double? _bearing;
-  double? _distance;
   String? _error;
 
   @override
-  void initState() {
-    super.initState();
-    _startAr();
-  }
+  void dispose() { _search.dispose(); super.dispose(); }
 
-  @override
-  void dispose() {
-    _compassSubscription?.cancel();
-    _positionSubscription?.cancel();
-    _cameraController?.dispose();
-    super.dispose();
-  }
-
-  Future<void> _startAr() async {
+  Future<void> _runSearch(String text) async {
+    final q = text.trim();
+    if (q.isEmpty) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() { _loading = true; _error = null; _searchOpen = true; });
     try {
-      final cameras = await availableCameras();
-      if (cameras.isEmpty) {
-        throw StateError('Камера не найдена');
-      }
-
-      final backCamera = cameras.firstWhere(
-        (camera) => camera.lensDirection == CameraLensDirection.back,
-        orElse: () => cameras.first,
-      );
-
-      final controller = CameraController(
-        backCamera,
-        ResolutionPreset.medium,
-        enableAudio: false,
-      );
-      await controller.initialize();
-
-      if (!mounted) {
-        await controller.dispose();
-        return;
-      }
-      setState(() => _cameraController = controller);
-
-      _compassSubscription = FlutterCompass.events?.listen((event) {
-        final heading = event.heading;
-        if (!mounted || heading == null) return;
-        setState(() {
-          _heading = heading;
-          _updateBearing();
-        });
-      });
-
-      await _startLocation();
-    } on CameraException catch (error) {
-      if (mounted) setState(() => _error = 'Не удалось открыть камеру: ${error.description ?? error.code}');
-    } catch (error) {
-      if (mounted) setState(() => _error = error.toString());
+      final found = await PlaceSearchService.search(q);
+      if (!mounted) return;
+      setState(() { _results = found; _loading = false; });
+      if (found.isNotEmpty) _map.move(LatLng(found.first.lat, found.first.lon), 15);
+      _history.remove(q); _history.insert(0, q);
+      if (_history.length > 8) _history.removeLast();
+      if (found.isEmpty) setState(() => _error = 'Ничего не найдено');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _loading = false; _error = 'Не удалось выполнить поиск. Проверьте интернет.'; });
     }
   }
 
-  Future<void> _startLocation() async {
-    if (!await Geolocator.isLocationServiceEnabled()) {
-      if (mounted) setState(() => _error = 'Включите геолокацию для AR-навигации');
-      return;
+  Future<void> _category(String id, String title) async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() { _loading = true; _error = null; _searchOpen = true; });
+    try {
+      final found = await PlaceSearchService.category(id);
+      if (!mounted) return;
+      setState(() { _results = found; _loading = false; });
+      if (found.isNotEmpty) _map.move(LatLng(found.first.lat, found.first.lon), 14);
+      if (found.isEmpty) setState(() => _error = '$title рядом не найдены');
+    } catch (_) {
+      if (mounted) setState(() { _loading = false; _error = 'Не удалось загрузить места'; });
     }
+  }
 
-    var permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
-    if (permission == LocationPermission.denied ||
-        permission == LocationPermission.deniedForever) {
-      if (mounted) setState(() => _error = 'Разрешите доступ к геолокации');
-      return;
-    }
-
-    final position = await Geolocator.getCurrentPosition();
-    _setLocation(position);
-
-    _positionSubscription = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 5,
+  void _select(PlaceResult p) {
+    final point = LatLng(p.lat, p.lon);
+    _map.move(point, 17);
+    setState(() { _center = point; _searchOpen = false; });
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(p.name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8), Text(p.displayName),
+          const SizedBox(height: 18),
+          FilledButton.icon(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.directions), label: Text('Маршрут · $_transport')),
+        ]),
       ),
-    ).listen(_setLocation);
+    );
   }
 
-  void _setLocation(Position position) {
-    if (!mounted) return;
-    setState(() {
-      _location = LatLng(position.latitude, position.longitude);
-      _distance = Geolocator.distanceBetween(
-        position.latitude,
-        position.longitude,
-        _target.latitude,
-        _target.longitude,
-      );
-      _updateBearing();
-    });
+  void _openSearch() => setState(() { _searchOpen = true; _error = null; });
+  void _openAr() => Navigator.push(context, MaterialPageRoute(builder: (_) => const ArPage()));
+
+  Future<void> _locate() async {
+    if (!await Geolocator.isLocationServiceEnabled()) { _message('Геолокация выключена'); return; }
+    var p = await Geolocator.checkPermission();
+    if (p == LocationPermission.denied) p = await Geolocator.requestPermission();
+    if (p == LocationPermission.denied || p == LocationPermission.deniedForever) { _message('Нет разрешения на геолокацию'); return; }
+    final pos = await Geolocator.getCurrentPosition();
+    final point = LatLng(pos.latitude, pos.longitude);
+    setState(() => _center = point);
+    _map.move(point, 16);
   }
 
-  void _updateBearing() {
-    if (_location == null) return;
-    final lat1 = _location!.latitude * math.pi / 180;
-    final lat2 = _target.latitude * math.pi / 180;
-    final deltaLon = (_target.longitude - _location!.longitude) * math.pi / 180;
-
-    final y = math.sin(deltaLon) * math.cos(lat2);
-    final x = math.cos(lat1) * math.sin(lat2) -
-        math.sin(lat1) * math.cos(lat2) * math.cos(deltaLon);
-    final bearing = math.atan2(y, x) * 180 / math.pi;
-    _bearing = (bearing + 360) % 360;
-  }
-
-  double _relativeBearing() {
-    if (_bearing == null || _heading == null) return 0;
-    var relative = _bearing! - _heading!;
-    while (relative > 180) {
-      relative -= 360;
-    }
-    while (relative < -180) {
-      relative += 360;
-    }
-    return relative;
-  }
-
-  String _distanceText() {
-    if (_distance == null) return 'Определяем расстояние…';
-    if (_distance! < 1000) return '${_distance!.round()} м';
-    return '${(_distance! / 1000).toStringAsFixed(1)} км';
-  }
+  void _message(String text) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
 
   @override
-  Widget build(BuildContext context) {
-    final controller = _cameraController;
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
-        fit: StackFit.expand,
+  Widget build(BuildContext context) => Scaffold(
+    body: Stack(children: [
+      FlutterMap(
+        mapController: _map,
+        options: MapOptions(initialCenter: _center, initialZoom: 13, minZoom: 3, maxZoom: 20),
         children: [
-          if (controller != null && controller.value.isInitialized)
-            CameraPreview(controller)
-          else
-            const Center(child: CircularProgressIndicator()),
-          if (_error != null)
-            Center(
-              child: Container(
-                margin: const EdgeInsets.all(24),
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.78),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  _error!,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white, fontSize: 16),
-                ),
-              ),
-            ),
-          SafeArea(
-            child: Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Row(
-                    children: [
-                      _ArCircleButton(
-                        icon: Icons.arrow_back,
-                        onPressed: () => Navigator.of(context).pop(),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.65),
-                            borderRadius: BorderRadius.circular(18),
-                          ),
-                          child: const Text(
-                            'AR-навигация',
-                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const Spacer(),
-                Transform.translate(
-                  offset: Offset(_relativeBearing().clamp(-55, 55).toDouble() * 3, 0),
-                  child: const Icon(
-                    Icons.navigation,
-                    color: Colors.white,
-                    size: 92,
-                    shadows: [Shadow(blurRadius: 12, color: Colors.black)],
-                  ),
-                ),
-                const Spacer(),
-                Container(
-                  margin: const EdgeInsets.fromLTRB(12, 0, 12, 18),
-                  padding: const EdgeInsets.all(18),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.72),
-                    borderRadius: BorderRadius.circular(24),
-                  ),
-                  child: Column(
-                    children: [
-                      const Text(
-                        'Красная площадь',
-                        style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        _distanceText(),
-                        style: const TextStyle(color: Colors.white70, fontSize: 16),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        _heading == null ? 'Ищем направление…' : 'Поверните телефон по стрелке',
-                        style: const TextStyle(color: Colors.white70),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
+          TileLayer(
+            urlTemplate: yandexApiKey.isEmpty
+              ? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+              : 'https://tiles.api-maps.yandex.ru/v1/tiles/?x={x}&y={y}&z={z}&lang=ru_RU&l=map&apikey=$yandexApiKey',
+            userAgentPackageName: 'ru.ourmaps.app',
           ),
+          if (_results.isNotEmpty) MarkerLayer(markers: _results.map((p) => Marker(
+            point: LatLng(p.lat, p.lon), width: 42, height: 42,
+            child: GestureDetector(onTap: () => _select(p), child: const Icon(Icons.location_on, size: 42, color: Colors.red)),
+          )).toList()),
+          RichAttributionWidget(attributions: [
+            TextSourceAttribution(yandexApiKey.isEmpty ? 'OpenStreetMap contributors' : 'Yandex Maps'),
+          ]),
         ],
       ),
-    );
-  }
+      SafeArea(child: Column(children: [
+        Padding(padding: const EdgeInsets.all(12), child: Material(elevation: 6, borderRadius: BorderRadius.circular(18), child: InkWell(
+          onTap: _openSearch,
+          borderRadius: BorderRadius.circular(18),
+          child: SizedBox(height: 56, child: Row(children: [
+            const SizedBox(width: 16), const Icon(Icons.search), const SizedBox(width: 10),
+            Expanded(child: Text(_search.text.isEmpty ? 'Куда отправимся?' : _search.text)),
+            IconButton(onPressed: () => setState(() => _searchOpen = true), icon: const Icon(Icons.auto_awesome)),
+          ])),
+        ))),
+        if (_searchOpen) _searchPanel(),
+        const Spacer(),
+        _transportBar(),
+        Padding(padding: const EdgeInsets.fromLTRB(12, 4, 12, 10), child: Material(elevation: 7, borderRadius: BorderRadius.circular(20), child: InkWell(
+          onTap: () => _category('places', 'Места'), borderRadius: BorderRadius.circular(20),
+          child: const Padding(padding: EdgeInsets.all(16), child: Row(children: [Icon(Icons.auto_awesome), SizedBox(width: 10), Expanded(child: Text('Что интересного рядом?', style: TextStyle(fontWeight: FontWeight.w700))), Icon(Icons.chevron_right)])),
+        ))),
+      ])),
+      Positioned(right: 16, bottom: 155, child: Column(children: [
+        FloatingActionButton.small(heroTag: 'ar', onPressed: _openAr, child: const Icon(Icons.view_in_ar)),
+        const SizedBox(height: 10),
+        FloatingActionButton.small(heroTag: 'loc', onPressed: _locate, child: const Icon(Icons.my_location)),
+      ])),
+    ]),
+  );
+
+  Widget _searchPanel() => Padding(padding: const EdgeInsets.symmetric(horizontal: 12), child: Material(elevation: 8, borderRadius: BorderRadius.circular(18), child: Padding(padding: const EdgeInsets.all(14), child: Column(mainAxisSize: MainAxisSize.min, children: [
+    TextField(controller: _search, autofocus: true, textInputAction: TextInputAction.search, onSubmitted: _runSearch, decoration: InputDecoration(hintText: 'Адрес, место или вопрос', prefixIcon: const Icon(Icons.search), suffixIcon: IconButton(onPressed: () => _runSearch(_search.text), icon: const Icon(Icons.arrow_forward)), border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)))),
+    if (_loading) const Padding(padding: EdgeInsets.all(12), child: LinearProgressIndicator()),
+    if (_error != null) Padding(padding: const EdgeInsets.all(8), child: Text(_error!, style: const TextStyle(color: Colors.red))),
+    if (_results.isEmpty && !_loading) ...[
+      const Align(alignment: Alignment.centerLeft, child: Padding(padding: EdgeInsets.only(top: 10, bottom: 6), child: Text('Последние места', style: TextStyle(fontWeight: FontWeight.w700)))),
+      ..._history.map((h) => ListTile(dense: true, leading: const Icon(Icons.history), title: Text(h), onTap: () { _search.text = h; _runSearch(h); })),
+      Wrap(spacing: 6, runSpacing: 6, children: [
+        _chip('🍕 Еда', 'food'), _chip('☕ Кофе', 'coffee'), _chip('🏛️ Места', 'places'), _chip('🛍️ Магазины', 'shops'), _chip('🌳 Погулять', 'walk'), _chip('🎬 Развлечения', 'fun'),
+      ]),
+    ],
+    if (_results.isNotEmpty) ...[
+      const Align(alignment: Alignment.centerLeft, child: Padding(padding: EdgeInsets.only(top: 10, bottom: 6), child: Text('Результаты', style: TextStyle(fontWeight: FontWeight.w700)))),
+      ConstrainedBox(constraints: const BoxConstraints(maxHeight: 300), child: ListView(shrinkWrap: true, children: _results.map((p) => ListTile(leading: const Icon(Icons.place), title: Text(p.name), subtitle: Text(p.displayName, maxLines: 2, overflow: TextOverflow.ellipsis), onTap: () => _select(p))).toList())),
+    ],
+  ]))));
+
+  Widget _chip(String text, String id) => ActionChip(label: Text(text), onPressed: () => _category(id, text));
+  Widget _transportBar() => Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), child: Material(elevation: 5, borderRadius: BorderRadius.circular(18), child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: ['Пешком','Машина','Автобус','Метро'].map((m) => Padding(padding: const EdgeInsets.all(3), child: ChoiceChip(label: Text(m), selected: _transport == m, onSelected: (_) => setState(() => _transport = m))).toList()))));
 }
 
-class _ArCircleButton extends StatelessWidget {
-  const _ArCircleButton({required this.icon, required this.onPressed});
-
-  final IconData icon;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.black.withValues(alpha: 0.65),
-      shape: const CircleBorder(),
-      child: IconButton(
-        onPressed: onPressed,
-        color: Colors.white,
-        icon: Icon(icon),
-      ),
-    );
+class ArPage extends StatefulWidget {
+  const ArPage({super.key});
+  @override State<ArPage> createState() => _ArPageState();
+}
+class _ArPageState extends State<ArPage> {
+  CameraController? camera;
+  StreamSubscription<CompassEvent>? compass;
+  double heading = 0;
+  String status = 'Запуск AR…';
+  @override void initState() { super.initState(); _start(); }
+  @override void dispose() { compass?.cancel(); camera?.dispose(); super.dispose(); }
+  Future<void> _start() async {
+    try {
+      final cams = await availableCameras();
+      final back = cams.firstWhere((c) => c.lensDirection == CameraLensDirection.back, orElse: () => cams.first);
+      camera = CameraController(back, ResolutionPreset.medium, enableAudio: false);
+      await camera!.initialize();
+      compass = FlutterCompass.events?.listen((e) { if (mounted && e.heading != null) setState(() => heading = e.heading!); });
+      if (mounted) setState(() => status = 'AR готов • направление ${heading.toStringAsFixed(0)}°');
+    } catch (e) { if (mounted) setState(() => status = 'Камера/компас недоступны'); }
   }
+  @override Widget build(BuildContext context) => Scaffold(backgroundColor: Colors.black, appBar: AppBar(title: const Text('AR-навигация'), backgroundColor: Colors.black, foregroundColor: Colors.white), body: camera?.value.isInitialized == true ? Stack(children: [CameraPreview(camera!), Center(child: Transform.rotate(angle: heading * math.pi / 180, child: const Icon(Icons.navigation, size: 110, color: Colors.white))), Positioned(left: 16, right: 16, bottom: 30, child: Card(child: Padding(padding: const EdgeInsets.all(16), child: Text(status, textAlign: TextAlign.center))))]) : Center(child: Text(status, style: const TextStyle(color: Colors.white))));
 }
