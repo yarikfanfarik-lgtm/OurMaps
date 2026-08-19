@@ -17,15 +17,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
+
       - name: Flutter version
         run: flutter --version
+
       - name: Generate Android project
         run: flutter create . --platforms=android --project-name our_maps
+
       - name: Configure Android permissions
         shell: bash
         run: |
@@ -42,14 +46,16 @@ jobs:
               text = text.replace('<application ', permissions + '<application ', 1)
           path.write_text(text, encoding='utf-8')
           PY
+
       - name: Install dependencies
         run: flutter pub get
+
       - name: Analyze app code
         run: flutter analyze lib
+
       - name: Build release APK
-        env:
-          YANDEX_API_KEY: ${{ secrets.YANDEX_API_KEY }}
-        run: flutter build apk --release --dart-define=YANDEX_API_KEY="$YANDEX_API_KEY"
+        run: flutter build apk --release
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
