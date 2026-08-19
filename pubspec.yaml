@@ -1,0 +1,18 @@
+name: our_maps
+description: OurMaps — independent maps with navigation, AR and AI recommendations.
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: '>=3.6.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  flutter_map: ^8.3.1
+  latlong2: ^0.9.1
+  geolocator: ^14.0.3
+
+flutter:
+  uses-material-design: true
